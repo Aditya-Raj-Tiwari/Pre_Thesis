@@ -1,0 +1,13 @@
+[project]
+name = "nc-proofs-tools"
+version = "0.1.0"
+description = "Python side of the thesis: numeric NC tools and symbolic checks (layers 1-2)"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+    "sympy",
+    "z3-solver",
+    "panco @ git+https://github.com/anne-bou/panco",
+]
+
+[tool.uv]
+package = false
