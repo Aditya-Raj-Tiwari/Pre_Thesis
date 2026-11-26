@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Verifying LLM-Generated Network Calculus Proofs</title>
+<style>
+  @page { size: A4; margin: 20mm 18mm 20mm 18mm; }
+  :root { --ink:#1b1f24; --muted:#5a6270; --rule:#d5d9df; --accent:#1f4e79; --soft:#f3f6f9; --warn:#8a5a00; --warnbg:#fff7e6; }
+  html { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  body { font-family: "Charter","Georgia",serif; font-size: 10.3pt; line-height: 1.42; color: var(--ink); background:#fff; margin:0; }
+  h1 { font-family: "Helvetica Neue",Arial,sans-serif; font-size: 19pt; line-height:1.2; margin: 0 0 4pt; color: var(--accent); }
+  .sub { font-family: "Helvetica Neue",Arial,sans-serif; color: var(--muted); font-size: 9.5pt; margin-bottom: 14pt; }
+  h2 { font-family: "Helvetica Neue",Arial,sans-serif; font-size: 13pt; color: var(--accent); margin: 18pt 0 6pt; padding-bottom: 3pt; border-bottom: 1px solid var(--rule); break-after: avoid; }
+  h3 { font-family: "Helvetica Neue",Arial,sans-serif; font-size: 10.8pt; margin: 12pt 0 4pt; break-after: avoid; }
+  p { margin: 0 0 6pt; }
+  ul, ol { margin: 0 0 7pt; padding-left: 16pt; }
+  li { margin-bottom: 2.5pt; }
+  code { font-family: "SF Mono",Menlo,Consolas,monospace; font-size: 8.8pt; background: var(--soft); padding: 0 2pt; border-radius: 2px; }
+  pre { font-family: "SF Mono",Menlo,Consolas,monospace; font-size: 8.4pt; background: var(--soft); border: 1px solid var(--rule); padding: 6pt 8pt; border-radius: 3px; white-space: pre-wrap; break-inside: avoid; margin: 4pt 0 8pt; }
+  table { width: 100%; border-collapse: collapse; font-size: 8.6pt; line-height: 1.32; margin: 4pt 0 10pt; }
+  th { font-family: "Helvetica Neue",Arial,sans-serif; text-align: left; background: var(--soft); font-weight: 600; }
+  th, td { border: 1px solid var(--rule); padding: 3pt 5pt; vertical-align: top; }
+  tr { break-inside: avoid; }
+  .box { background: var(--soft); border-left: 3px solid var(--accent); padding: 7pt 10pt; margin: 6pt 0 10pt; break-inside: avoid; }
+  .warn { background: var(--warnbg); border-left: 3px solid var(--warn); padding: 7pt 10pt; margin: 6pt 0 10pt; break-inside: avoid; }
+  .small { font-size: 8.6pt; color: var(--muted); }
+  a { color: var(--accent); text-decoration: none; word-break: break-all; }
+  .refs li { font-size: 8.6pt; margin-bottom: 2pt; }
+  .pb { break-before: page; }
+</style>
+</head>
+<body>
+
+<h1>Verifying LLM-Generated Network Calculus Proofs</h1>
+<div class="sub">Findings, related work and a proposed verification framework · Bachelor thesis preparation, TUM · Aditya · 24 November 2026<br>
+Sources checked on 24 November 2026.</div>
+
+<div class="box">
+<strong>Summary.</strong>
+<ul>
+<li><strong>Running code is not verification.</strong> Code that evaluates a delay bound checks only the arithmetic of one formula. A proof assistant (Lean 4, Coq/Rocq, Isabelle/HOL) accepts a proof only if every inference step follows from the stated assumptions; a small trusted kernel re-checks the result.</li>
+<li><strong>The remaining risk is the statement.</strong> The kernel guarantees that the proof proves <em>this formal statement</em>, not that the statement means what the textbook theorem means. For a benchmark, formal statements should be written once and reviewed by a human; the LLM writes only the proof.</li>
+<li><strong>Network calculus (NC) formalizations exist, mostly in Coq.</strong> ONERA's NCCoq is the only substantial library. In Lean, Meta's <code>atlas-lean</code> repository gained a small NC core on 21–22 November 2026 (curves, min-plus convolution, backlog/delay bounds, pay-bursts-only-once), built on the same Lean version as this project. Mathlib itself has no NC.</li>
+<li><strong>TSN shapers:</strong> I found no proof-assistant formalization of NC bounds for CBS, TAS, CQF or ATS. TSN shapers <em>have</em> been analysed with the UPPAAL model checker, so the gap is specifically "interactive proofs of NC shaper bounds".</li>
+<li><strong>Proposed design:</strong> four verification layers: (1) final answer vs. an NC tool, (2) symbolic/numeric step checks, (3) formal proof check of a human-reviewed subset, (4) LLM judges calibrated against layer 3. A working Lean 4 + Mathlib environment and a proof checker are already set up (Appendix A).</li>
+</ul>
+</div>
+
+<h2>1. Why “run the Python code” is not verification</h2>
+<p>Code that computes <code>T + b/R</code> always prints a number, even if the derivation that led to <code>T + b/R</code> used the wrong service curve, ignored the FIFO assumption, or assumed <code>r &gt; R</code>. It checks one formula on one input. It never checks whether that formula follows from the NC theorems and the problem's assumptions. A proof assistant does not evaluate the bound; it checks that the theorem “under these hypotheses, delay ≤ T + b/R” follows logically from definitions and earlier theorems.</p>
+
+<h2>2. How proof assistants verify</h2>
+<h3>2.1 Terms</h3>
+<ul>
+<li><strong>Proof assistant / interactive theorem prover:</strong> software in which definitions, theorem statements and proofs are written in a formal language and every step is checked mechanically. Relevant here: Lean 4 (with the Mathlib library), Coq (renamed the Rocq Prover with version 9.0, released 12 March 2025) and Isabelle/HOL.</li>
+<li><strong>Tactic:</strong> a command that transforms the current goal (e.g. <code>intro</code>, <code>rw</code>, <code>linarith</code>, <code>nlinarith</code>, <code>simp</code>).</li>
+<li><strong>Kernel:</strong> a small core that checks the final proof object, so bugs in tactics cannot produce an accepted false proof. Lean and Coq follow the <em>de Bruijn criterion</em> (proof objects checkable by a small independent checker). Isabelle follows the LCF approach, which Paulson describes as an <em>alternative</em> to the de Bruijn criterion with the same goal of a small trusted core; a Dagstuhl report describes Isabelle's logic as resting on “a very small kernel that needs to be trusted: a dozen axioms, that have been manually validated.”</li>
+<li><strong>Mathlib:</strong> Lean's community library. Per Wikipedia, as of May 2025 it contained over 210,000 theorems and 100,000 definitions.</li>
+</ul>
+
+<h3>2.2 Input and output, with a small NC-flavoured Lean example</h3>
+<p>Classical single-node result (Le Boudec &amp; Thiran, Thms 1.4.1–1.4.2): a flow with token-bucket arrival curve α(t) = b + r·t for t &gt; 0 (α(0) = 0) crossing a rate-latency server β(t) = R·[t − T]⁺ with R &gt; 0 and r ≤ R has virtual delay at most T + b/R (the actual delay for a FIFO server) and backlog at most b + r·T. The full proof needs min-plus definitions (horizontal deviation involves both a sup and an inf). The example below is only a warm-up algebraic lemma, to show what input and output look like:</p>
+<pre>import Mathlib
+
+theorem delay_ge_latency (b R T : ℝ) (hR : 0 &lt; R) (hb : 0 ≤ b) :
+    T ≤ T + b / R := by
+  have h : 0 ≤ b / R := div_nonneg hb (le_of_lt hR)
+  linarith</pre>
+<p>I ran all three outcomes with Lean 4.36.0 and Mathlib v4.36.0:</p>
+<table>
+<tr><th style="width:22%">Case</th><th>Lean output</th></tr>
+<tr><td>Correct proof</td><td>No errors. <code>#print axioms delay_ge_latency</code> lists only <code>[propext, Classical.choice, Quot.sound]</code>.</td></tr>
+<tr><td>Wrong proof (delete the <code>have</code> line)</td><td>Rejected: “linarith failed to find a contradiction”, with the remaining goal and hypotheses printed at that line. This step-level signal can be fed back to an LLM.</td></tr>
+<tr><td>Incomplete proof (<code>sorry</code>)</td><td>Compiles with the warning “declaration uses `sorry`”; <code>#print axioms</code> lists <code>sorryAx</code>. A checker must count this as a failure.</td></tr>
+<tr><td>Smuggled axiom</td><td>A file that declares <code>axiom cheat : …</code> and uses it compiles <em>without any warning</em>; only <code>#print axioms</code> reveals <code>cheat</code>. A checker must inspect axioms, not just warnings.</td></tr>
+</table>
+
+<h3>2.3 Placeholders differ between tools</h3>
+<ul>
+<li><strong>Lean:</strong> <code>sorry</code> compiles with a warning and adds <code>sorryAx</code>.</li>
+<li><strong>Coq/Rocq:</strong> <code>Admitted</code> turns the goal into an axiom, by default without a warning; <code>Print Assumptions</code> reveals it.</li>
+<li><strong>Isabelle:</strong> <code>sorry</code> is accepted only interactively or in <code>quick_and_dirty</code> mode; a normal session build fails. <code>oops</code> abandons the proof and produces no theorem at all.</li>
+</ul>
+<p>So a checker should verify three things: the named theorem exists, its statement is the fixed one, and its axiom dependencies are within policy. Not every published evaluator does all three (e.g. DeepSeek-Prover-V1.5's public <code>verifier.py</code> rejects errors and <code>sorry</code> but does not check for custom axioms).</p>
+
+<h3>2.4 The key limitation: statement faithfulness</h3>
+<p>The Weng et al. autoformalization survey (arXiv 2505.23486) notes that successful compilation “does not mean that autoformalization is completely correct.” Typical NC failure modes: missing hypotheses (stability r ≤ R, FIFO, non-decreasing curves, α(0) = 0); type traps (in Lean, <code>(7 : ℕ) / 2 = 3</code> and <code>x / 0 = 0</code>, so a statement over ℕ or one allowing R = 0 can be provable but meaningless); vacuous statements (contradictory hypotheses); weakened conclusions.</p>
+<p>Mitigations, strongest first: (1) human-written, human-reviewed formal statements, frozen per problem, with the whole statement file (imports, definitions, statement) and toolchain pinned; (2) back-translation to English and comparison; (3) automatic alignment checkers such as FormalAlign; (4) sanity tests: show the hypotheses are satisfiable (the statement is not vacuous), check that the statement is not closed by a trivial tactic, and check it against known counterexamples of weakened variants.</p>
+
+<h3>2.5 Lean 4, Coq/Rocq or Isabelle/HOL for this thesis</h3>
+<table>
+<tr><th style="width:18%">Aspect</th><th>Lean 4 + Mathlib</th><th>Coq / Rocq</th><th>Isabelle/HOL</th></tr>
+<tr><td>Existing NC work</td><td>Small new NC core in <code>atlas-lean</code> (Nov 2026, Lean 4.36.0); discrete min-plus lemmas in <code>minplus-widgets</code>; nothing in Mathlib</td><td><strong>NCCoq</strong> (ONERA); Prosa for response-time analysis</td><td>2013 prototype (Mabille et al.); no maintained public library found</td></tr>
+<tr><td>LLM prover ecosystem</td><td>Largest (DeepSeek-Prover, Goedel-Prover, Kimina; miniF2F, FormalMATH; IneqMath's Lean experiment and Ineq-Comp)</td><td>Growing (CoqPilot, Rango, ProsaBuddy; COPRA supports Coq and Lean)</td><td>DSP, DTV; Sledgehammer</td></tr>
+<tr><td>Inequality automation</td><td><code>linarith</code>, <code>nlinarith</code>, <code>positivity</code>; <code>linear_combination</code> for equalities (<code>polyrith</code> is no longer available: its external service was shut down)</td><td><code>lia</code>, <code>lra</code>, <code>nra</code> (the Micromega family)</td><td>Sledgehammer, <code>arith</code></td></tr>
+<tr><td>Learning material</td><td>Excellent (Natural Number Game, TPIL, MIL)</td><td>Good (Software Foundations)</td><td>Good (Concrete Semantics, prog-prove)</td></tr>
+</table>
+<p>PutnamBench and miniF2F exist in several of these systems, not only Lean. <strong>Position:</strong> Lean 4 is the pragmatic default for an LLM-evaluation thesis, and the new <code>atlas-lean</code> NC core (same Lean version as my setup) makes it stronger, subject to checking its licence. Coq is the right choice if reusing NCCoq's verified foundations is the priority, at the cost of most off-the-shelf LLM provers.</p>
+
+<h2>3. Existing formalizations of network calculus</h2>
+<table>
+<tr><th style="width:30%">Work</th><th style="width:9%">Tool</th><th>What was formalized / status</th></tr>
+<tr><td>Mabille, Boyer, Fejoz, Merz, “Towards Certifying Network Calculus”, ITP 2013 (<a href="https://hal.science/hal-00904796">hal-00904796</a>); companion EUCASS 2013 paper</td><td>Isabelle/HOL</td><td>Result certification (“proof by instance”): a simplified analysis prototype emits a trace that Isabelle checks, on a toy network. Parts of the underlying theory were still unfinished. Authors report “less than 1 development year” of effort. No maintained public repository found.</td></tr>
+<tr><td>Rakotomalala, Boyer, Roux, “Formal Verification of Real-time Networks”, JRWRTC 2019 (hal-02449140)</td><td>Coq</td><td>“a subset of the theory large enough to handle a complete proof of bounds on a representative case study”. Symbolic bounds proved in Coq; numeric values from RTaW's min-plus calculator.</td></tr>
+<tr><td>Rakotomalala, Roux, Boyer, “Verifying Min-Plus Computations with Coq”, NFM 2021 (extended version <a href="https://hal.science/hal-03176024">hal-03176024</a>)</td><td>Coq</td><td>A separate paper from JRWRTC 2019: UPP / piecewise-affine functions, closure under min-plus operators; an existing implementation is used as an oracle and checked by a Coq verifier.</td></tr>
+<tr><td>Boyer, Roux, Daigmorte, ERTS 2022 (<a href="https://hal.science/hal-03693417">hal-03693417</a>)</td><td>Coq</td><td>Checks the min-plus computations of an industrial analysis in Coq; shows scalability.</td></tr>
+<tr><td>Boyer, Roux, Daigmorte, Puechmaille, ECRTS 2021 (LIPIcs.ECRTS.2021.14)</td><td>Coq</td><td>Coq proof of a new residual service curve for sporadic flows. Artifact: Zenodo 10.5281/zenodo.4518843, DARTS 7.1.2.</td></tr>
+<tr><td>Roux, Quinton, Boyer, “A Formal Link Between Response Time Analysis and Network Calculus”, ECRTS 2022 (<a href="https://drops.dagstuhl.de/entities/document/10.4230/LIPIcs.ECRTS.2022.5">LIPIcs.ECRTS.2022.5</a>)</td><td>Coq</td><td>Links dense-time NC and discrete-time RTA; equivalence of FIFO definitions. For static priority it proves one direction and found an error in a textbook theorem, fixed in NCCoq. Builds on Prosa and NCCoq (Quinton: Inria Grenoble).</td></tr>
+<tr><td><strong>NCCoq</strong> (<a href="https://gitlab.mpi-sws.org/proux/nc-coq">gitlab.mpi-sws.org/proux/nc-coq</a>)</td><td>Coq</td><td>Main ONERA NC development: cumulative curves, min-plus operators, delay/backlog bounds (in <code>deviations.v</code>). Coq 8.20.1 (8.19–8.20), MathComp 2.3.0, MathComp Analysis 1.8.0, Hierarchy Builder 1.8.0, MathComp Dioid. Last master commit 27 Feb 2025. <strong>Licence: ONERA non-commercial (academic/research use).</strong></td></tr>
+<tr><td>Prosa (<a href="https://prosa.mpi-sws.org">prosa.mpi-sws.org</a>)</td><td>Coq</td><td>Verified response-time analysis; the closest “LLM + domain library” analogue (ProsaBuddy).</td></tr>
+<tr><td><strong><code>facebookresearch/atlas-lean</code></strong>, PR #5995 (merged 22 Nov 2026) and a follow-up</td><td>Lean 4</td><td><code>NetworkCalculus.lean</code> and <code>NetworkCalculusConcatenation.lean</code> (~1,060 lines, no <code>sorry</code>): arrival/service curves, min-plus convolution, backlog and delay bounds, token-bucket/rate-latency closed forms, concatenation and pay-bursts-only-once. Lean 4.36.0. Licence not declared in GitHub metadata; check before reuse.</td></tr>
+<tr><td><code>BigO-Hunter/minplus-widgets</code> (<code>Widgets/NetCalc.lean</code>)</td><td>Lean 4</td><td>Discrete-time (ℕ) min-plus convolution and backlog lemmas (~245 lines).</td></tr>
+<tr><td>TSN shapers (CBS, TAS, CQF, ATS)</td><td>—</td><td>No proof-assistant formalization of NC shaper bounds found (targeted searches). Model-checking work exists, e.g. “A Formal Method for Evaluating the Performance of TSN Traffic Shapers using UPPAAL” (time-aware and peristaltic shapers). A small CBS lemma in Lean or Coq would still be a novel artifact.</td></tr>
+</table>
+
+<h2>4. How LLM research verifies LLM-generated proofs</h2>
+<table>
+<tr><th style="width:21%">Approach</th><th style="width:30%">How verification happens</th><th>Reported results (checked)</th></tr>
+<tr><td>Draft, Sketch, Prove (Jiang et al., ICLR 2023, arXiv 2210.12283)</td><td>Informal proof → Isabelle sketch of a <em>given formal statement</em>; Sledgehammer closes gaps; kernel checks</td><td>miniF2F-test 39.3% with human informal proofs, 38.9% with Minerva-540B drafts, vs. 20.9% Sledgehammer + heuristics and 29.9% Thor. 20 hand-made few-shot examples.</td></tr>
+<tr><td>Don't Trust: Verify (Zhou et al., ICLR 2024, arXiv 2403.18120)</td><td>Autoformalize statement + solution in Isabelle; vote only over verified solutions (falls back to plain majority vote if none verifies)</td><td>Beats majority voting by more than 12% on GSM8K; filtering raises the share of correct-answer solutions by more than 20% (appendix).</td></tr>
+<tr><td>IneqMath (Lu, Sheng et al., NeurIPS 2025 Spotlight, arXiv 2506.07927)</td><td>Informal benchmark: final-answer judge + four step-wise LLM judges (toy case, logical gap, numerical approximation, computation)</td><td>29 LLMs; o1 reaches 8.0% overall under step-wise judging. Largest answer-to-proof drop: 65.5 percentage points (Grok 3 mini, 71.5% → 6.0%).</td></tr>
+<tr><td>IneqMath, Appendix C.7 (Lean experiment)</td><td>GPT-4.1 rewrite → Goedel-Formalizer-V2-32B → Lean 4 → provers; automatic, no human audit described</td><td>Best: Goedel-Prover-SFT 14.0%, Goedel-Prover-V2-32B 13.0% (pass@32). Measures prover difficulty on translated problems, not statement error.</td></tr>
+<tr><td>DeepSeek-Prover-V2 (arXiv 2504.21801)</td><td>Lean 4 compiler</td><td>miniF2F-test 88.9% (pass@8192), 82.4% (pass@32); PutnamBench 47/658 (49 before two misformulated problems were excluded; 649 problems compatible with the Lean version used).</td></tr>
+<tr><td>Goedel-Prover V1 / V2 (arXiv 2502.07640, 2508.03613)</td><td>Lean compiler; V2 adds compiler-guided self-correction</td><td>V1-SFT 57.6% miniF2F (pass@32). V2-32B 88.1% (pass@32), 90.4% with two self-correction rounds; 86 PutnamBench problems (pass@184). V1 proofs often rely on <code>nlinarith</code>/<code>simp_all</code>.</td></tr>
+<tr><td>Kimina-Prover</td><td>Lean compiler</td><td>72B model: 84.0% miniF2F pass@32 (as reported in the Goedel-V2 paper).</td></tr>
+<tr><td>Ineq-Comp (Zhao et al., NeurIPS 2025 D&amp;B, arXiv 2505.12680)</td><td>Lean compiler; 75 seed inequalities, 150 compositional variants, 50 Ineq-Real</td><td>Kimina-Prover-Preview-Distill-7B: 80% of AM-GM seeds vs. 44% (Type I) and 64% (Type II) variants. DeepSeek-Prover-V2-7B: ~20% drop on variants (pass@32). Most models solve &lt;7% of Ineq-Mix at 128 attempts; DeepSeek-Prover-V2 22%.</td></tr>
+<tr><td>ProsaBuddy (arXiv 2610.03796, accepted at RTSS 2026)</td><td>ReAct agent in Rocq with retrieval, subgoal delegation and proof auditing; human hints</td><td>17/24 lemmas on a real-time-scheduling mini-benchmark vs. at most 3 for prior Rocq agents. Prosa lemmas with their definitions run to several hundred lines vs. at most 20 in PutnamBench; Prosa is “orders of magnitude smaller” than mathematical corpora.</td></tr>
+<tr><td>FormalAlign (arXiv 2410.10135)</td><td>Trained statement-alignment model</td><td>Alignment-selection score 99.21% vs. GPT-4's 88.91% on FormL4-Basic (66.39% vs. 64.34% on MiniF2F-Valid).</td></tr>
+<tr><td>LeanDojo / ReProver; Lean Copilot</td><td>Programmatic interaction with Lean; retrieval-augmented prover (ReProver); LLM tactic suggestion inside Lean (any editor)</td><td>Tooling rather than a benchmark.</td></tr>
+</table>
+<p><strong>Lessons:</strong> report pass@k (probability that at least one of k samples verifies); reject <code>sorry</code>, admitted goals, new axioms and modified statements; compiler feedback loops give measurable gains; domain libraries with little training data (Prosa, NC) are much harder than competition mathematics — for NC this is a hypothesis the thesis can test.</p>
+
+<h2>5. Complementary verification methods and NC tools</h2>
+<table>
+<tr><th style="width:20%">Method</th><th>Checks</th><th>Strength</th><th>Weakness</th><th style="width:15%">Role here</th></tr>
+<tr><td>Final answer vs. NC tool</td><td>Numeric bound vs. a tool's bound</td><td>Cheap, objective</td><td>Says nothing about the proof. A bound below the tool's is either tighter or unsound; soundness must be established independently.</td><td>Layer 1</td></tr>
+<tr><td>SymPy</td><td>Algebraic steps</td><td>Catches algebra slips</td><td>Needs step extraction; no logical reasoning</td><td>Layer 2</td></tr>
+<tr><td>SMT (Z3)</td><td>Whether an inequality step follows from constraints</td><td>Automatic, gives counterexamples</td><td>sup/inf and min-plus operators are outside easy fragments</td><td>Layer 2 (single steps)</td></tr>
+<tr><td>Numeric curve testing</td><td>Sampled claims about curves</td><td>Finds counterexamples fast</td><td>Never proves anything</td><td>Negative filter</td></tr>
+<tr><td>LLM judges (IneqMath style)</td><td>Step-level flaws in informal proofs</td><td>Scalable</td><td>Not sound; needs calibration</td><td>Layer 4</td></tr>
+<tr><td>Proof assistant</td><td>Full logical correctness w.r.t. the formal statement</td><td>Sound; step-level errors</td><td>Statement faithfulness; formalization cost</td><td>Layer 3 (gold standard)</td></tr>
+<tr><td>Certificate checking (ONERA)</td><td>A tool's computed curves in Coq</td><td>Sound for computations</td><td>Checks results, not the LLM's derivation</td><td>If the LLM outputs curves</td></tr>
+</table>
+<p><strong>Numeric ground-truth tools:</strong></p>
+<ul>
+<li><strong>Nancy</strong> (C#, MIT, <a href="https://github.com/rzippo/nancy">github.com/rzippo/nancy</a>): exact min-plus/max-plus operators on UPP piecewise-affine curves. The Python wrapper is a proof of concept covering part of the API through a separate <code>nancy-http</code> server.</li>
+<li><strong>Nancy-Playground</strong> (ECRTS 2026, <a href="https://github.com/rzippo/nancy-playground">github.com/rzippo/nancy-playground</a>): console calculator with RTaW's playground syntax; matches RTaW on its own test suite, without a general compatibility guarantee.</li>
+<li><strong>NetworkCalculus.org DNC</strong> (formerly DiscoDNC; Java, LGPL-2.1, <a href="https://github.com/NetCal/DNC">github.com/NetCal/DNC</a>): TFA, SFA, PMOO, LUDB. Hand-computed test scenarios are in the separate <code>DNC_func_tests</code> submodule.</li>
+<li><strong>panco</strong> (Python, BSD-3, <a href="https://github.com/anne-bou/panco">github.com/anne-bou/panco</a>): FIFO LP analyses and a TSN module; calls <code>lp_solve</code>. Installed and tested in my setup.</li>
+<li><strong>Saihu</strong> (Python, MIT, EPFL): one interface over four back-ends: Linear TFA Solver, DNC, xTFA and panco.</li>
+<li><strong>RTaW-Pegase</strong> is commercial. RTaW's online min-plus playground is free and web-only for non-commercial academic use and its licence forbids benchmarking; the old URL currently returns HTTP 404.</li>
+</ul>
+<p><strong>Framing from TSN research:</strong> arXiv 2509.26368 (“Introducing Large Language Models into the Design Flow of Time-Sensitive Networking”) states that “as LLMs are not reliable for precise mathematical reasoning, external NC modules are required to compute accurate delay bounds.” That paper concerns numeric delay computation in a design workflow; whether LLMs can produce <em>correct NC proofs</em> is the related question this thesis would study.</p>
+
+<h2>6. Proposed verification framework</h2>
+<p><strong>Benchmark (about 30–60 problems):</strong> Tier A, single node (token bucket + rate-latency: delay, backlog, output arrival curve); Tier B, composition (concatenation, pay bursts only once; FIFO / static-priority residual service); Tier C, TSN-flavoured (CBS or TAS service curves from published papers). Each problem has an informal statement, an IneqMath-style checkable task (bound estimation or relation prediction), a ground-truth answer from a tool or textbook, and for 15–25 Tier A/B problems a human-reviewed formal statement.</p>
+<p><strong>Model conditions:</strong> frontier and open LLMs, with and without retrieval over NC theory (Le Boudec &amp; Thiran, <em>Network Calculus</em>, free online; Bouillard, Boyer &amp; Le Corronc, <em>Deterministic Network Calculus</em>, ISTE/Wiley 2018). For the formal subset: (a) a general LLM writes the Lean proof; (b) a specialized prover (Goedel-Prover-V2, DeepSeek-Prover-V2-7B) receives the formal statement; (c) DSP-style informal proof → sketch → automation.</p>
+<p><strong>Layered verification:</strong></p>
+<ol>
+<li><strong>L1, final answer</strong> against Nancy / DNC / panco or a textbook formula, recorded as equal, looser, or below the reference (below needs a separate soundness check).</li>
+<li><strong>L2, symbolic/numeric:</strong> SymPy/Z3 on extracted algebraic steps; numeric counterexample search on curves.</li>
+<li><strong>L3, formal:</strong> the proof must compile against the frozen statement file and pinned toolchain; reject <code>sorry</code>, admitted goals and new axioms; record the failing step.</li>
+<li><strong>L4, LLM judges:</strong> IneqMath-style step judges on the informal proof, with agreement measured against L3. A failed formal proof does not by itself show the informal proof was wrong, so disagreements need manual review.</li>
+</ol>
+<p><strong>Metrics:</strong> final-answer accuracy; step-wise judge accuracy; formal pass@k; the answer-vs-proof gap; an error taxonomy (wrong theorem, missing hypothesis such as r ≤ R, sup/inf mistakes, arithmetic); effect of retrieval; judge–kernel agreement.</p>
+<table>
+<tr><th style="width:12%">Month</th><th>Work</th></tr>
+<tr><td>1</td><td>Lean basics, NC basics, tool decision; first 5 formal statements; evaluate reuse of <code>atlas-lean</code> NC core</td></tr>
+<tr><td>2</td><td>Benchmark (informal problems + tool answers); minimal formal NC core</td></tr>
+<tr><td>3</td><td>L1/L2 pipeline; baseline LLM runs with and without retrieval</td></tr>
+<tr><td>4</td><td>Formal-subset runs (L3); judge runs (L4)</td></tr>
+<tr><td>5</td><td>Analysis and error taxonomy</td></tr>
+<tr><td>6</td><td>Writing</td></tr>
+</table>
+<p><strong>Out of scope:</strong> general min-plus theory (arbitrary-curve convolution, UPP algorithms); end-to-end TSN network analyses in a proof assistant; the long-term “new shaper → automatic proof” vision (future work). <strong>Statement policy:</strong> the LLM never writes the theorem statements used for scoring; I write them, a second person reviews them, and each passes the sanity tests in §2.4. Autoformalization, if evaluated, is a separate experiment.</p>
+
+<h2>7. Open questions for discussion</h2>
+<ol>
+<li>Lean 4 (best LLM tooling; new <code>atlas-lean</code> NC core) or Coq/Rocq (NCCoq/Prosa reuse; weaker LLM tooling)? Any contact with the ONERA authors (Boyer, Roux)?</li>
+<li>Should the LLM produce formal proofs directly, informal proofs that are autoformalized (DSP/DTV style), or both as separate conditions?</li>
+<li>Who reviews the formal statements, and is a formal subset of about 15–25 problems acceptable?</li>
+<li>Which NC results define the benchmark: textbook single-node results only, or also TSN shapers (CBS, TAS, ATS)? Which papers are the source of truth?</li>
+<li>Which numeric tool is the reference: Nancy, DNC, panco, or a chair-internal tool?</li>
+<li>Is the IneqMath-style answer-vs-proof gap the main metric, and should LLM judges be validated against the formal checker?</li>
+<li>Compute budget and model access (API models vs. local open provers such as Goedel-Prover-V2-8B).</li>
+</ol>
+
+<h2>8. Caveats</h2>
+<ul>
+<li>“No proof-assistant formalization of TSN shaper bounds” and “no public Isabelle artifact for Mabille et al.” rest on targeted searches (24 Nov 2026), not an exhaustive survey.</li>
+<li>The Lean NC code in <code>atlas-lean</code> is three days old; its scope, licence and stability need checking before relying on it.</li>
+<li>Benchmark numbers are not comparable across papers: sampling budgets differ (pass@32 vs. pass@8192) and evaluation sets are revised (e.g. DeepSeek-Prover-V2's PutnamBench count fell from 49 to 47 after two misformulated problems were excluded).</li>
+<li>Several cited works are preprints (e.g. DeepSeek-Prover-V2, the Weng et al. survey); ProsaBuddy (RTSS 2026), IneqMath and Ineq-Comp (NeurIPS 2025) are peer-reviewed.</li>
+<li>A proof assistant verifies logic, not modelling: whether the NC model (curves, FIFO, shaper semantics) describes a real TSN switch remains an assumption outside any proof.</li>
+</ul>
+
+<h2 class="pb">Appendix A. Current setup status</h2>
+<p>A Lean project is set up and builds cleanly:</p>
+<ul>
+<li>Lean 4.36.0 (via elan), Mathlib v4.36.0 with prebuilt cache, VS Code Lean 4 extension.</li>
+<li>Three warm-up lemmas proven (<code>delay_ge_latency</code>, delay bound antitone in R, backlog ≥ burst).</li>
+<li>A checker script (<code>scripts/check.sh FILE THEOREM…</code>) that passes a proof only if Lean reports no errors, no <code>sorry</code>, and the theorem depends only on <code>propext</code>, <code>Classical.choice</code> and <code>Quot.sound</code>.</li>
+</ul>
+<table>
+<tr><th>Test file</th><th>Checker verdict</th><th>Reason</th></tr>
+<tr><td>Correct proofs</td><td>PASS</td><td>Standard axioms only</td></tr>
+<tr><td>Broken proof</td><td>FAIL</td><td><code>linarith failed</code></td></tr>
+<tr><td><code>sorry</code> proof</td><td>FAIL</td><td>Proof contains <code>sorry</code></td></tr>
+<tr><td>Smuggled axiom</td><td>FAIL</td><td>Non-standard axiom <code>cheat</code> (no compiler warning)</td></tr>
+</table>
+<p>Python side (layers 1–2): <code>sympy</code>, <code>z3-solver</code>, <code>panco</code> + <code>lp_solve</code>. Smoke test: for b = 2, r = 1, R = 4, T = 3, panco's TFA delay bound is 3.5, equal to T + b/R; Z3 confirms T ≤ T + b/R for all R &gt; 0, b ≥ 0. Still to do: freezing statements (hash of the full statement file) in the benchmark harness.</p>
+
+<h2>Appendix B. Notes on sources</h2>
+<p>Identifiers, numbers, quotations and licences were checked against the primary sources (arXiv, HAL, Dagstuhl/LIPIcs, publisher pages, GitHub/GitLab, Software Heritage, tool documentation) on 24 November 2026. The NCCoq repository server was unreachable during the check; its details come from the Software Heritage snapshot of 29 August 2026. The Lean behaviour in Section 2 and Appendix A was reproduced locally with Lean 4.36.0 and Mathlib v4.36.0.</p>
+
+<h2>References (selected)</h2>
+<ol class="refs">
+<li>Le Boudec, Thiran. <em>Network Calculus.</em> Springer LNCS 2050; free PDF at <a href="https://leboudec.github.io/netcal/">leboudec.github.io/netcal</a>.</li>
+<li>Bouillard, Boyer, Le Corronc. <em>Deterministic Network Calculus: From Theory to Practical Implementation.</em> ISTE/Wiley, 2018.</li>
+<li>Mabille, Boyer, Fejoz, Merz. Towards Certifying Network Calculus. ITP 2013. <a href="https://hal.science/hal-00904796">hal-00904796</a></li>
+<li>Rakotomalala, Boyer, Roux. Formal Verification of Real-time Networks. JRWRTC 2019. hal-02449140</li>
+<li>Rakotomalala, Roux, Boyer. Verifying Min-Plus Computations with Coq. NFM 2021. <a href="https://hal.science/hal-03176024">hal-03176024</a></li>
+<li>Boyer, Roux, Daigmorte. Checking validity of the min-plus operations… ERTS 2022. <a href="https://hal.science/hal-03693417">hal-03693417</a></li>
+<li>Boyer, Roux, Daigmorte, Puechmaille. ECRTS 2021, LIPIcs.ECRTS.2021.14; artifact DARTS 7.1.2.</li>
+<li>Roux, Quinton, Boyer. A Formal Link Between Response Time Analysis and Network Calculus. ECRTS 2022, LIPIcs.ECRTS.2022.5.</li>
+<li>NCCoq: <a href="https://gitlab.mpi-sws.org/proux/nc-coq">gitlab.mpi-sws.org/proux/nc-coq</a> · Prosa: <a href="https://prosa.mpi-sws.org">prosa.mpi-sws.org</a></li>
+<li>atlas-lean NC module: <a href="https://github.com/facebookresearch/atlas-lean/pull/5995">github.com/facebookresearch/atlas-lean/pull/5995</a> · minplus-widgets: <a href="https://github.com/BigO-Hunter/minplus-widgets">github.com/BigO-Hunter/minplus-widgets</a></li>
+<li>A Formal Method for Evaluating the Performance of TSN Traffic Shapers using UPPAAL. <a href="https://zhehou.github.io/papers/A-Formal-Method-for-Evaluating-the-Performance-of-TSN-Traffic-Shapers-using-UPPAAL.pdf">PDF</a></li>
+<li>Jiang et al. Draft, Sketch, and Prove. ICLR 2023. arXiv 2210.12283</li>
+<li>Zhou et al. Don't Trust: Verify. ICLR 2024. arXiv 2403.18120</li>
+<li>Lu, Sheng et al. Solving Inequality Proofs with Large Language Models (IneqMath). NeurIPS 2025. arXiv 2506.07927</li>
+<li>Zhao et al. Ineq-Comp. NeurIPS 2025 D&amp;B. arXiv 2505.12680</li>
+<li>DeepSeek-Prover-V2. arXiv 2504.21801 · Goedel-Prover arXiv 2502.07640 · Goedel-Prover-V2 arXiv 2508.03613</li>
+<li>ProsaBuddy. RTSS 2026. arXiv 2610.03796</li>
+<li>FormalAlign. arXiv 2410.10135 · Weng et al., autoformalization survey, arXiv 2505.23486</li>
+<li>Introducing Large Language Models into the Design Flow of Time-Sensitive Networking. arXiv 2509.26368</li>
+<li>Nancy <a href="https://github.com/rzippo/nancy">github.com/rzippo/nancy</a> · DNC <a href="https://github.com/NetCal/DNC">github.com/NetCal/DNC</a> · panco <a href="https://github.com/anne-bou/panco">github.com/anne-bou/panco</a></li>
+</ol>
+
+</body>
+</html>
